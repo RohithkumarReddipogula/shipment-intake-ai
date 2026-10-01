@@ -18,6 +18,18 @@ class WeightUnit(StrEnum):
     T = "t"
 
 
+class CargoType(StrEnum):
+    GENERAL = "general"
+    MACHINERY = "machinery"
+    FOOD_PERISHABLE = "food_perishable"
+    DANGEROUS_GOODS = "dangerous_goods"
+    CHEMICALS = "chemicals"
+    ELECTRONICS = "electronics"
+    AUTOMOTIVE_PARTS = "automotive_parts"
+    TEXTILES = "textiles"
+    OTHER = "other"
+
+
 class EmailStatus(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
@@ -55,7 +67,9 @@ class ShipmentFields(BaseModel):
     weight_value: float | None = None
     weight_unit: WeightUnit | None = None
     pallet_count: int | None = None
-    cargo_type: str | None = None
+    cargo_type: CargoType | None = None
+    # The cargo as worded in the email, so nothing is lost by the fixed category.
+    cargo_description: str | None = None
 
     @computed_field
     @property

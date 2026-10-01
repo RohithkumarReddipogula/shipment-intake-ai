@@ -18,7 +18,7 @@ def make_fields(**overrides) -> ShipmentFields:
         weight_value=1200,
         weight_unit="kg",
         pallet_count=4,
-        cargo_type="general cargo",
+        cargo_type="general",
     )
     return ShipmentFields(**(base | overrides))
 
@@ -140,3 +140,53 @@ class TestPickupDateRequiredOnlyForBookings:
     def test_unknown_request_type_requires_pickup_date(self):
         result = decide(make_output(request_type=None, pickup_date=None), RECEIVED, THRESHOLD)
         assert result.reasons == ["missing:request_type", "missing:pickup_date"]
+
+
+class TestDangerousGoods:
+    def test_model_classified_dangerous_goods_always_needs_review(self):
+        # Complete, valid, maximum confidence: still review.
+        result = decide(make_output(confidence=1.0, cargo_type="dangerous_goods"), RECEIVED, THRESHOLD)
+        assert result.decision == Decision.NEEDS_REVIEW
+        assert result.reasons == ["dangerous_goods"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Ladung: 4 Paletten Farbe, Gefahrgut Klasse 3",
+            "Gefahrgüter nach ADR, bitte Fahrer mit Schein",
+            "UN 1263 paint, 4 pallets",
+            "contains UN1993",
+            "hazardous materials, MSDS attached",
+            "Dangerous goods declaration attached",
+            "IMDG compliant packaging",
+        ],
+    )
+    def test_email_text_marker_overrides_model_classification(self, text):
+        # The model says general cargo; the email text says otherwise.
+        result = decide(make_output(confidence=1.0), RECEIVED, THRESHOLD, email_text=text)
+        assert result.decision == Decision.NEEDS_REVIEW
+        assert result.reasons == ["dangerous_goods"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "kein Gefahrgut",
+            "Keine Gefahrgüter, normale Stückgut-Sendung",
+            "non-hazardous cargo",
+            "no dangerous goods",
+            "not ADR",
+            "Adr.: Hafenstraße 12, Hamburg",
+            "Fundraising for UNICEF 2026",
+        ],
+    )
+    def test_negated_or_unrelated_mentions_do_not_trigger(self, text):
+        result = decide(make_output(), RECEIVED, THRESHOLD, email_text=text)
+        assert result.decision == Decision.ACCEPTED
+
+    def test_negation_only_covers_the_negated_mention(self):
+        text = "kein Gefahrgut in Sendung 1, Sendung 2 enthält UN 1263"
+        assert decide(make_output(), RECEIVED, THRESHOLD, email_text=text).reasons == ["dangerous_goods"]
+
+    def test_reported_alongside_other_reasons(self):
+        result = decide(make_output(cargo_type="dangerous_goods", origin=None), RECEIVED, THRESHOLD)
+        assert result.reasons == ["dangerous_goods", "missing:origin"]

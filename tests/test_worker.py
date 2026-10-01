@@ -17,7 +17,7 @@ def good_output(**overrides) -> ExtractionOutput:
     fields = dict(
         request_type="booking", origin="Hamburg", destination="München",
         pickup_date=date(2026, 3, 17), weight_value=1200, weight_unit="kg",
-        pallet_count=4, cargo_type="general cargo",
+        pallet_count=4, cargo_type="general",
     )
     conf = {k: 0.95 for k in FieldConfidence.model_fields}
     return ExtractionOutput(fields=ShipmentFields(**(fields | overrides)), confidence=FieldConfidence(**conf))
@@ -194,10 +194,10 @@ def test_each_attempt_is_logged_with_error(conn, settings, email_id, caplog):
         process_one(conn, fake, settings, now=T0 + timedelta(hours=1))
 
     lines = [r.getMessage() for r in caplog.records]
-    assert "email=1 attempt=1/5 outcome=retry" in lines[0]
+    assert "email=1 attempt=1/8 outcome=retry" in lines[0]
     assert "503 unavailable" in lines[0]
     assert "next_attempt_at=" in lines[0]
-    assert "email=1 attempt=2/5 outcome=success decision=accepted" in lines[1]
+    assert "email=1 attempt=2/8 outcome=success decision=accepted" in lines[1]
 
 
 def test_attempt_history_in_api(client, settings):
@@ -247,3 +247,13 @@ def test_finish_time_and_backoff_measured_after_llm_call(conn, settings, email_i
     assert datetime.fromisoformat(attempt["finished_at"]) == T0 + timedelta(seconds=10)
     expected_next = T0 + timedelta(seconds=10 + settings.backoff_base_seconds)
     assert datetime.fromisoformat(attempt["next_attempt_at"]) == expected_next
+
+
+def test_worker_applies_dangerous_goods_rule_to_email_text(conn, settings):
+    email = EmailIn(message_id="dg", sender="a@b.de", subject="Buchung",
+                    body="4 Paletten Lack, Gefahrgut UN 1263", received_at=T0)
+    email_id, _ = repo.insert_email(conn, email, timedelta(hours=24), T0)
+    # The model misses it and says general cargo with full confidence.
+    process_one(conn, FakeExtractor(good_output()), settings, now=T0)
+    assert status(conn, email_id) == "needs_review"
+    assert '"dangerous_goods"' in repo.get_latest_extraction(conn, email_id)["decision_reasons_json"]

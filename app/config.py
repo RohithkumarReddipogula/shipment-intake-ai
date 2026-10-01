@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.8
 
     # Worker / retries
-    max_attempts: int = 5
+    max_attempts: int = 8
     backoff_base_seconds: float = 2.0
     backoff_max_seconds: float = 300.0
     lock_timeout_seconds: float = 300.0

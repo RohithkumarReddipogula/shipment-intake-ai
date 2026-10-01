@@ -5,7 +5,7 @@ import secrets
 
 from app.schemas import EmailIn
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 SYSTEM_INSTRUCTION = """\
 You extract shipment details from freight forwarding emails (quote requests and bookings).
@@ -36,8 +36,20 @@ FIELDS (use null when the email does not state a value; do not guess)
   German number format: "1.200 kg" is 1200, "1,5 t" is 1.5.
 - pallet_count: number of pallets (Paletten, EUR-Paletten, Europaletten, Gitterboxen count
   as pallets). null if the cargo is not on pallets or the count is not stated.
-- cargo_type: short English description, e.g. "general cargo", "machinery",
-  "dangerous goods", "food (chilled)".
+- cargo_type: exactly one of:
+    general           ordinary palletized goods not covered below (household goods, paper, furniture)
+    machinery         machines, machine parts, industrial equipment
+    food_perishable   chilled or frozen food, fresh produce, anything temperature-controlled
+    dangerous_goods   anything marked ADR, Gefahrgut, UN number, hazardous, hazmat, IMDG
+    chemicals         chemicals that are not marked as dangerous goods
+    electronics       computers, phones, electronic components
+    automotive_parts  vehicle parts and accessories
+    textiles          clothing, fabrics, shoes
+    other             cargo that fits none of the above
+  Dangerous goods markers take priority: paint with a UN number is dangerous_goods, not
+  chemicals. A negated marker ("kein Gefahrgut", "non-hazardous") is not a marker.
+- cargo_description: the cargo as described in the email, in its original language and
+  wording, shortened to a few words (e.g. "Maschinenteile", "Kühlware 2-8°C, Molkereiprodukte").
 
 FORWARDED THREADS AND REPLIES
 - Use the most recent message that states shipment details. If a later message changes

@@ -13,7 +13,7 @@ from app.config import Settings, get_settings
 from app.db import connect, init_db
 from app.extraction.base import ExtractionError, Extractor, RetryableExtractionError
 from app.schemas import EmailIn
-from app.validation import decide
+from app.validation import decide_email
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def process_one(
                             f"{type(e).__name__}: {e}", retryable=True)
             return email_id
 
-        result = decide(output, email.received_at.date(), settings.confidence_threshold)
+        result = decide_email(output, email, settings.confidence_threshold)
         repo.complete_success(conn, email_id, attempt_no, clock(), output, result,
                               extractor.model, extractor.prompt_version)
         log.info("%s outcome=success decision=%s reasons=%s",
