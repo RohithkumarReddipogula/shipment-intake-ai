@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # Optional so tests and the fake extractor run without a key.
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.8-flash"
+    gemini_timeout_seconds: float = 30.0
 
     db_path: str = "shipment_intake.db"
 

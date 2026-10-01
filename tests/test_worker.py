@@ -51,6 +51,7 @@ def test_success_accepted(conn, settings, email_id):
     extraction = repo.get_latest_extraction(conn, email_id)
     assert extraction["decision"] == "accepted"
     assert extraction["model"] == "fake"
+    assert extraction["prompt_version"] == "fake-v1"
     assert history(conn, email_id) == [(1, "success")]
     # The extractor received the stored email.
     assert fake.calls[0].body == "4 Paletten..."
@@ -233,3 +234,16 @@ def test_run_loop_processes_until_stopped(conn, settings, email_id):
 
     assert status(conn, email_id) == "accepted"
     assert not thread.is_alive()
+
+
+def test_finish_time_and_backoff_measured_after_llm_call(conn, settings, email_id):
+    # Claim at T0; the LLM call takes 10 seconds before failing.
+    times = iter([T0, T0 + timedelta(seconds=10)])
+    fake = FakeExtractor(RetryableExtractionError("503"))
+    process_one(conn, fake, settings, rand=MAX_RAND, clock=lambda: next(times))
+
+    [attempt] = repo.get_attempts(conn, email_id)
+    assert datetime.fromisoformat(attempt["started_at"]) == T0
+    assert datetime.fromisoformat(attempt["finished_at"]) == T0 + timedelta(seconds=10)
+    expected_next = T0 + timedelta(seconds=10 + settings.backoff_base_seconds)
+    assert datetime.fromisoformat(attempt["next_attempt_at"]) == expected_next

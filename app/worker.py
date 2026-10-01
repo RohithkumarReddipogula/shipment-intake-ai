@@ -2,13 +2,14 @@
 
 import logging
 import random
+import signal
 import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from app import repo
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db import connect, init_db
 from app.extraction.base import ExtractionError, Extractor, RetryableExtractionError
 from app.schemas import EmailIn
@@ -31,9 +32,17 @@ def process_one(
     settings: Settings,
     now: datetime | None = None,
     rand: Callable[[], float] = random.random,
+    clock: Callable[[], datetime] | None = None,
 ) -> int | None:
-    """Process at most one job. Returns its email id, or None if nothing was due."""
-    now = now or datetime.now(timezone.utc)
+    """Process at most one job. Returns its email id, or None if nothing was due.
+
+    Time is read twice: at claim, and after the LLM call, so finished_at and the retry
+    backoff are measured from when the call actually ended. Tests pass `now` to freeze
+    time, or `clock` to control both readings.
+    """
+    if clock is None:
+        clock = (lambda: now) if now is not None else (lambda: datetime.now(timezone.utc))
+    now = clock()
     job = repo.claim_next(conn, now, timedelta(seconds=settings.lock_timeout_seconds))
     if job is None:
         return None
@@ -60,18 +69,18 @@ def process_one(
             output = extractor.extract(email)
         except ExtractionError as e:
             retryable = isinstance(e, RetryableExtractionError)
-            _handle_failure(conn, settings, email_id, attempt_no, now, rand, label,
+            _handle_failure(conn, settings, email_id, attempt_no, clock(), rand, label,
                             f"{type(e).__name__}: {e}", retryable)
             return email_id
         except Exception as e:
             # Unknown errors are retried: losing an email is worse than a wasted call.
             log.exception("%s unexpected extractor error", label)
-            _handle_failure(conn, settings, email_id, attempt_no, now, rand, label,
+            _handle_failure(conn, settings, email_id, attempt_no, clock(), rand, label,
                             f"{type(e).__name__}: {e}", retryable=True)
             return email_id
 
         result = decide(output, email.received_at.date(), settings.confidence_threshold)
-        repo.complete_success(conn, email_id, attempt_no, now, output, result,
+        repo.complete_success(conn, email_id, attempt_no, clock(), output, result,
                               extractor.model, extractor.prompt_version)
         log.info("%s outcome=success decision=%s reasons=%s",
                  label, result.decision.value, result.reasons)
@@ -122,3 +131,21 @@ def run(
                 stop.wait(settings.poll_interval_seconds)
     finally:
         conn.close()
+
+
+def main() -> None:
+    from app.extraction.gemini import GeminiExtractor
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    settings = get_settings()
+    extractor = GeminiExtractor.from_settings(settings)
+
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    run(settings, extractor, stop)
+    log.info("worker stopped")
+
+
+if __name__ == "__main__":
+    main()
