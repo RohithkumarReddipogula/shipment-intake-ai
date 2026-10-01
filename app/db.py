@@ -44,9 +44,18 @@ CREATE INDEX IF NOT EXISTS idx_extractions_email ON extractions (email_id);
 """
 
 
+def to_utc_iso(dt: datetime) -> str:
+    """ISO-8601 UTC with fixed format, so string comparison in SQL matches time order.
+
+    Naive datetimes are treated as UTC.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def utcnow() -> str:
-    """ISO-8601 UTC with fixed format, so string comparison in SQL matches time order."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return to_utc_iso(datetime.now(timezone.utc))
 
 
 def connect(path: str) -> sqlite3.Connection:

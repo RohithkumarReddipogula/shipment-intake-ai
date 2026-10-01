@@ -98,3 +98,38 @@ class ReviewIn(BaseModel):
     reviewer: str
     # Required when action == correct: the full corrected field set.
     corrected: ShipmentFields | None = None
+
+
+# --- API responses -------------------------------------------------------
+
+
+class EmailCreated(BaseModel):
+    id: int
+    status: EmailStatus
+    duplicate: bool
+
+
+class ExtractionOut(BaseModel):
+    fields: ShipmentFields
+    confidence: FieldConfidence
+    decision: Decision
+    reasons: list[str]
+    model: str
+    prompt_version: str
+    created_at: datetime
+    review_action: ReviewAction | None = None
+    corrected: ShipmentFields | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class EmailOut(BaseModel):
+    id: int
+    message_id: str | None
+    sender: str
+    subject: str
+    received_at: datetime
+    status: EmailStatus
+    attempts: int
+    last_error: str | None
+    extraction: ExtractionOut | None

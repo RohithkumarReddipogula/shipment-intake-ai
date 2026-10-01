@@ -2,16 +2,8 @@ import sqlite3
 
 import pytest
 
-from app.db import connect, init_db, utcnow
+from app.db import init_db, utcnow
 from app.schemas import ExtractionOutput, ShipmentFields, WeightUnit
-
-
-@pytest.fixture
-def conn(tmp_path):
-    c = connect(str(tmp_path / "test.db"))
-    init_db(c)
-    yield c
-    c.close()
 
 
 def _insert_email(conn, dedup_key):
