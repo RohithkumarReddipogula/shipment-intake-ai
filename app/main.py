@@ -134,6 +134,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_409_CONFLICT, str(e))
         return _email_out(conn, repo.get_email(conn, email_id))
 
+    @app.post("/review/{email_id}/retry")
+    def retry_failed(email_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> EmailOut:
+        """Re-queue a failed email (e.g. after an API outage) with a fresh attempt budget.
+        The previous attempt history is kept."""
+        try:
+            repo.requeue_failed(conn, email_id, datetime.now(timezone.utc))
+        except LookupError:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "email not found")
+        except repo.ReviewConflict as e:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        return _email_out(conn, repo.get_email(conn, email_id))
+
     return app
 
 

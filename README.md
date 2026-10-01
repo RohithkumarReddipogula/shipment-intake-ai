@@ -36,6 +36,7 @@ Email status lifecycle:
     ▲                   │     └──▶ needs_review ──review──▶ accepted
     └── retry (backoff) ┤
                         └────────▶ failed ──────review──▶ accepted   (correct only)
+                                          └──────retry───▶ pending    (fresh attempt budget)
 ```
 
 A job stuck in `processing` (worker crashed) is claimed again after `LOCK_TIMEOUT_SECONDS`.
@@ -111,6 +112,7 @@ python eval/run_eval.py
 | `GET` | `/emails/{id}` | Status, latest extraction (with any review), and full attempt history. |
 | `GET` | `/review` | Emails in `needs_review` or `failed`, oldest first. `?reason=dangerous_goods` filters by reason code. |
 | `POST` | `/review/{id}` | `{"action": "approve", "reviewer": "..."}` or `{"action": "correct", "reviewer": "...", "corrected": {...all fields...}}`. |
+| `POST` | `/review/{id}/retry` | Put a `failed` email back to `pending` with a fresh attempt budget, e.g. after an API outage. History is kept. |
 
 ### Configuration
 
@@ -216,6 +218,13 @@ Corrections must be a complete field set, not a patch, so each one is a full lab
 failed email has no extraction, so correcting it first creates an empty one (reason
 `extraction_failed`). Reviewing an email that isn't awaiting review returns `409`.
 
+A failed email can also be re-queued with `POST /review/{id}/retry`, which is the usual fix
+after a quota or API outage. The `attempts` counter is not reset, because it is the lock
+token and the attempt number in the history. Instead, `retry_base` records where the new
+budget starts, and the attempt limit and backoff count from there. The old history stays,
+and new attempts continue the numbering: after a requeue with `MAX_ATTEMPTS=8`, the log
+shows `attempt=9/16`.
+
 ### Other choices
 
 - **Raw `sqlite3`, no ORM:** three tables, and the claim and dedup logic is easier to
@@ -261,7 +270,6 @@ API outage can't show up as bad accuracy.
 - No authentication on the API.
 - No schema migrations: schema changes need a fresh database.
 - A single SQLite file suits one API process and one worker, not many.
-- Failed emails can be corrected but not re-queued for another extraction attempt.
 - Turning review corrections into eval cases is manual for now.
 - The received date is taken in UTC, so an email sent just after midnight German time
   counts as the previous day for date checks.

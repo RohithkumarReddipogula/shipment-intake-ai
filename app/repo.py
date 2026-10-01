@@ -291,3 +291,28 @@ def review(
         conn.execute(
             "UPDATE emails SET status = 'accepted', updated_at = ? WHERE id = ?", (now_iso, email_id)
         )
+
+
+def requeue_failed(conn: sqlite3.Connection, email_id: int, now: datetime) -> None:
+    """Put a failed email back to pending with a fresh attempt budget.
+
+    attempts is not reset: it is the lock token and the attempt number in the history,
+    so new attempts continue the numbering. retry_base marks where the new budget starts.
+    Raises LookupError if the email doesn't exist, ReviewConflict if it isn't failed.
+    """
+    now_iso = to_utc_iso(now)
+    with transaction(conn):
+        email = get_email(conn, email_id)
+        if email is None:
+            raise LookupError(email_id)
+        if email["status"] != "failed":
+            raise ReviewConflict(f"email {email_id} is {email['status']}; only failed emails can be retried")
+        conn.execute(
+            """
+            UPDATE emails
+            SET status = 'pending', retry_base = attempts, next_attempt_at = ?,
+                locked_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (now_iso, now_iso, email_id),
+        )

@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS emails (
                     CHECK (status IN ('pending','processing','accepted','needs_review','failed')),
     -- Incremented on claim; also serves as the lock token for completing the attempt.
     attempts        INTEGER NOT NULL DEFAULT 0,
+    -- attempts at the time a failed email was re-queued by a reviewer. The attempt budget
+    -- and backoff count from here, while attempts (and the history) keep increasing.
+    retry_base      INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NOT NULL,
     locked_at       TEXT,
     last_error      TEXT,

@@ -47,11 +47,12 @@ def process_one(
     if job is None:
         return None
 
-    email_id, attempt_no = job["id"], job["attempts"]
-    label = f"email={email_id} attempt={attempt_no}/{settings.max_attempts}"
+    email_id, attempt_no, retry_base = job["id"], job["attempts"], job["retry_base"]
+    last_allowed = retry_base + settings.max_attempts
+    label = f"email={email_id} attempt={attempt_no}/{last_allowed}"
 
     try:
-        if attempt_no > settings.max_attempts:
+        if attempt_no > last_allowed:
             # Only reachable by reclaiming a stuck job: the worker died on every try.
             error = "max attempts exceeded (previous attempts did not finish)"
             repo.mark_failed(conn, email_id, attempt_no, now, error)
@@ -69,14 +70,14 @@ def process_one(
             output = extractor.extract(email)
         except ExtractionError as e:
             retryable = isinstance(e, RetryableExtractionError)
-            _handle_failure(conn, settings, email_id, attempt_no, clock(), rand, label,
-                            f"{type(e).__name__}: {e}", retryable)
+            _handle_failure(conn, settings, email_id, attempt_no, retry_base, clock(), rand,
+                            label, f"{type(e).__name__}: {e}", retryable)
             return email_id
         except Exception as e:
             # Unknown errors are retried: losing an email is worse than a wasted call.
             log.exception("%s unexpected extractor error", label)
-            _handle_failure(conn, settings, email_id, attempt_no, clock(), rand, label,
-                            f"{type(e).__name__}: {e}", retryable=True)
+            _handle_failure(conn, settings, email_id, attempt_no, retry_base, clock(), rand,
+                            label, f"{type(e).__name__}: {e}", retryable=True)
             return email_id
 
         result = decide_email(output, email, settings.confidence_threshold)
@@ -94,15 +95,18 @@ def _handle_failure(
     settings: Settings,
     email_id: int,
     attempt_no: int,
+    retry_base: int,
     now: datetime,
     rand: Callable[[], float],
     label: str,
     error: str,
     retryable: bool,
 ) -> None:
-    if retryable and attempt_no < settings.max_attempts:
+    # Budget and backoff count from the last re-queue, not from the first attempt.
+    attempt_in_round = attempt_no - retry_base
+    if retryable and attempt_in_round < settings.max_attempts:
         next_at = now + backoff_delay(
-            attempt_no, settings.backoff_base_seconds, settings.backoff_max_seconds, rand
+            attempt_in_round, settings.backoff_base_seconds, settings.backoff_max_seconds, rand
         )
         repo.schedule_retry(conn, email_id, attempt_no, now, error, next_at)
         log.warning("%s outcome=retry error=%r next_attempt_at=%s",
