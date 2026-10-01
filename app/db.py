@@ -1,10 +1,15 @@
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS emails (
     id              INTEGER PRIMARY KEY,
-    dedup_key       TEXT NOT NULL UNIQUE,
+    -- Normalized Message-ID; NULL when the email has none. Dedup on it is permanent.
+    dedup_key       TEXT UNIQUE,
+    -- Hash of normalized sender/subject/body. Dedup on it only applies within a time window.
+    content_hash    TEXT NOT NULL,
     message_id      TEXT,
     sender          TEXT NOT NULL,
     subject         TEXT NOT NULL,
@@ -12,6 +17,7 @@ CREATE TABLE IF NOT EXISTS emails (
     received_at     TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending','processing','accepted','needs_review','failed')),
+    -- Incremented on claim; also serves as the lock token for completing the attempt.
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NOT NULL,
     locked_at       TEXT,
@@ -21,6 +27,7 @@ CREATE TABLE IF NOT EXISTS emails (
 );
 
 CREATE INDEX IF NOT EXISTS idx_emails_claim ON emails (status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_emails_content_hash ON emails (content_hash, created_at);
 
 CREATE TABLE IF NOT EXISTS extractions (
     id                     INTEGER PRIMARY KEY,
@@ -41,6 +48,21 @@ CREATE TABLE IF NOT EXISTS extractions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_extractions_email ON extractions (email_id);
+
+-- One row per processing attempt: the retry history.
+CREATE TABLE IF NOT EXISTS attempts (
+    id              INTEGER PRIMARY KEY,
+    email_id        INTEGER NOT NULL REFERENCES emails(id),
+    attempt_no      INTEGER NOT NULL,
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    -- NULL while running; 'abandoned' when a stuck job is reclaimed after the lock timeout.
+    outcome         TEXT CHECK (outcome IN ('success','retry','failed','abandoned')),
+    error           TEXT,
+    next_attempt_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_email ON attempts (email_id);
 """
 
 
@@ -69,3 +91,16 @@ def connect(path: str) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """BEGIN IMMEDIATE takes the write lock up front, so check-then-write is race-free."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")

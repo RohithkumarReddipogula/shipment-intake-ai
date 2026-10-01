@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app import repo
 from app.schemas import EmailIn
@@ -51,7 +51,7 @@ def test_different_content_without_message_id_is_new(client):
 def test_message_id_angle_brackets_are_ignored():
     a = EmailIn(sender="x@y.de", body="b", message_id="<id@host>")
     b = EmailIn(sender="x@y.de", body="b", message_id="id@host")
-    assert repo.dedup_key(a) == repo.dedup_key(b) == "mid:id@host"
+    assert repo.message_key(a) == repo.message_key(b) == "id@host"
 
 
 def test_received_at_stored_as_utc(client):
@@ -74,3 +74,55 @@ def test_get_unknown_email_is_404(client):
 
 def test_missing_body_is_rejected(client):
     assert client.post("/emails", json={"sender": "x@y.de"}).status_code == 422
+
+
+def _backdate(conn, email_id, hours):
+    created = datetime.now(timezone.utc) - timedelta(hours=hours)
+    conn.execute(
+        "UPDATE emails SET created_at = ? WHERE id = ?",
+        (created.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), email_id),
+    )
+
+
+class TestContentDedupWindow:
+    """Without a Message-ID, same content only counts as a duplicate within the window."""
+
+    NO_MID = EMAIL | {"message_id": None}
+
+    def test_resend_within_window_is_duplicate(self, client, conn):
+        first_id = client.post("/emails", json=self.NO_MID).json()["id"]
+        _backdate(conn, first_id, hours=23)
+        r = client.post("/emails", json=self.NO_MID)
+        assert r.status_code == 200
+        assert r.json() == {"id": first_id, "status": "pending", "duplicate": True}
+
+    def test_identical_repeat_booking_after_window_is_new(self, client, conn):
+        first_id = client.post("/emails", json=self.NO_MID).json()["id"]
+        _backdate(conn, first_id, hours=25)
+        r = client.post("/emails", json=self.NO_MID)
+        assert r.status_code == 202
+        assert r.json()["id"] != first_id
+
+    def test_matches_most_recent_copy(self, client, conn):
+        # Week 1 and week 2 bookings exist; a retry of week 2 maps to week 2.
+        week1 = client.post("/emails", json=self.NO_MID).json()["id"]
+        _backdate(conn, week1, hours=24 * 7)
+        week2 = client.post("/emails", json=self.NO_MID).json()["id"]
+        assert client.post("/emails", json=self.NO_MID).json()["id"] == week2
+
+    def test_window_is_configurable(self, settings, conn):
+        from fastapi.testclient import TestClient
+
+        from app.main import create_app
+
+        with TestClient(create_app(settings.model_copy(update={"dedup_window_hours": 1}))) as c:
+            first_id = c.post("/emails", json=self.NO_MID).json()["id"]
+            _backdate(conn, first_id, hours=2)
+            assert c.post("/emails", json=self.NO_MID).status_code == 202
+
+    def test_message_id_dedup_has_no_window(self, client, conn):
+        first_id = client.post("/emails", json=EMAIL).json()["id"]
+        _backdate(conn, first_id, hours=24 * 30)
+        r = client.post("/emails", json=EMAIL)
+        assert r.status_code == 200
+        assert r.json()["id"] == first_id

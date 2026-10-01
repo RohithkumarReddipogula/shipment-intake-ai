@@ -9,8 +9,9 @@ from app.schemas import ExtractionOutput, ShipmentFields, WeightUnit
 def _insert_email(conn, dedup_key):
     now = utcnow()
     conn.execute(
-        "INSERT INTO emails (dedup_key, sender, subject, body, received_at, next_attempt_at, created_at, updated_at)"
-        " VALUES (?, 'a@b.de', 's', 'b', ?, ?, ?, ?)",
+        "INSERT INTO emails (dedup_key, content_hash, sender, subject, body, received_at,"
+        " next_attempt_at, created_at, updated_at)"
+        " VALUES (?, 'h', 'a@b.de', 's', 'b', ?, ?, ?, ?)",
         (dedup_key, now, now, now, now),
     )
 
@@ -23,6 +24,11 @@ def test_dedup_key_is_unique(conn):
     _insert_email(conn, "k1")
     with pytest.raises(sqlite3.IntegrityError):
         _insert_email(conn, "k1")
+
+
+def test_dedup_key_allows_many_nulls(conn):
+    _insert_email(conn, None)
+    _insert_email(conn, None)
 
 
 @pytest.mark.parametrize(

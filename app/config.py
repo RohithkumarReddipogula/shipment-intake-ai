@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     db_path: str = "shipment_intake.db"
 
+    # Emails without a Message-ID count as duplicates only if the same content arrived
+    # within this window. Catches client retries without dropping repeat bookings.
+    dedup_window_hours: float = 24.0
+
     # Decision: auto-accept only if every required field's confidence is >= this.
     confidence_threshold: float = 0.8
 

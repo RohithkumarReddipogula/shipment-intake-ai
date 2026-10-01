@@ -2,13 +2,14 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 
 from app import repo
 from app.config import Settings, get_settings
 from app.db import connect, init_db
-from app.schemas import EmailCreated, EmailIn, EmailOut, EmailStatus, ExtractionOut
+from app.schemas import AttemptOut, EmailCreated, EmailIn, EmailOut, EmailStatus, ExtractionOut
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
@@ -57,7 +58,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         email: EmailIn, response: Response, conn: sqlite3.Connection = Depends(get_conn)
     ) -> EmailCreated:
         """202 for a new email (queued). 200 with the existing record for a duplicate."""
-        email_id, created = repo.insert_email(conn, email)
+        email_id, created = repo.insert_email(
+            conn, email, timedelta(hours=settings.dedup_window_hours), datetime.now(timezone.utc)
+        )
         if not created:
             response.status_code = status.HTTP_200_OK
         row = repo.get_email(conn, email_id)
@@ -79,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             attempts=row["attempts"],
             last_error=row["last_error"],
             extraction=_extraction_out(extraction) if extraction else None,
+            attempt_history=[AttemptOut(**dict(a)) for a in repo.get_attempts(conn, email_id)],
         )
 
     return app

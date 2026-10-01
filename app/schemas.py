@@ -123,6 +123,15 @@ class ExtractionOut(BaseModel):
     reviewed_at: datetime | None = None
 
 
+class AttemptOut(BaseModel):
+    attempt_no: int
+    started_at: datetime
+    finished_at: datetime | None
+    outcome: str | None  # None while running
+    error: str | None
+    next_attempt_at: datetime | None
+
+
 class EmailOut(BaseModel):
     id: int
     message_id: str | None
@@ -133,3 +142,4 @@ class EmailOut(BaseModel):
     attempts: int
     last_error: str | None
     extraction: ExtractionOut | None
+    attempt_history: list[AttemptOut]
