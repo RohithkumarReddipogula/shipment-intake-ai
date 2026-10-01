@@ -9,13 +9,14 @@ from datetime import date, timedelta
 
 from app.schemas import Decision, ExtractionOutput, RequestType, ShipmentFields
 
-# Field name -> key in FieldConfidence. Weight is checked via the computed weight_kg.
-REQUIRED_FIELDS: dict[str, str] = {
+# Reason/confidence name -> attribute on ShipmentFields. The names match FieldConfidence,
+# so "weight" is used everywhere even though the value checked is weight_kg.
+CHECKED_FIELDS: dict[str, str] = {
     "request_type": "request_type",
     "origin": "origin",
     "destination": "destination",
     "pickup_date": "pickup_date",
-    "weight_kg": "weight",
+    "weight": "weight_kg",
     "pallet_count": "pallet_count",
     "cargo_type": "cargo_type",
 }
@@ -31,8 +32,19 @@ class DecisionResult:
     validation_errors: list[str]
 
 
+def required_fields(fields: ShipmentFields) -> list[str]:
+    """Quotes often have no fixed pickup date yet; everything else needs one."""
+    if fields.request_type == RequestType.QUOTE:
+        return [name for name in CHECKED_FIELDS if name != "pickup_date"]
+    return list(CHECKED_FIELDS)
+
+
 def missing_fields(fields: ShipmentFields) -> list[str]:
-    return [f"missing:{name}" for name in REQUIRED_FIELDS if getattr(fields, name) is None]
+    return [
+        f"missing:{name}"
+        for name in required_fields(fields)
+        if getattr(fields, CHECKED_FIELDS[name]) is None
+    ]
 
 
 def validate(fields: ShipmentFields, reference_date: date) -> list[str]:
@@ -74,10 +86,12 @@ def decide(output: ExtractionOutput, reference_date: date, threshold: float) -> 
     fields = output.fields
     validation_errors = validate(fields, reference_date)
 
+    # Checked for every present field, including an optional quote pickup date:
+    # a wrong value is worse than a missing one.
     low_confidence = [
-        f"low_confidence:{conf_key}"
-        for name, conf_key in REQUIRED_FIELDS.items()
-        if getattr(fields, name) is not None and getattr(output.confidence, conf_key) < threshold
+        f"low_confidence:{name}"
+        for name, attr in CHECKED_FIELDS.items()
+        if getattr(fields, attr) is not None and getattr(output.confidence, name) < threshold
     ]
 
     reasons = missing_fields(fields) + validation_errors + low_confidence

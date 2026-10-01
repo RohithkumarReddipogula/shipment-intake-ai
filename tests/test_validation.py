@@ -11,7 +11,7 @@ THRESHOLD = 0.8
 
 def make_fields(**overrides) -> ShipmentFields:
     base = dict(
-        request_type="quote",
+        request_type="booking",
         origin="Hamburg",
         destination="München",
         pickup_date=date(2026, 3, 17),
@@ -52,13 +52,13 @@ def test_missing_required_field_needs_review(field, reason):
 
 def test_missing_weight_reported_once():
     result = decide(make_output(weight_value=None, weight_unit=None), RECEIVED, THRESHOLD)
-    assert result.reasons == ["missing:weight_kg"]
+    assert result.reasons == ["missing:weight"]
 
 
 def test_weight_without_unit():
     result = decide(make_output(weight_unit=None), RECEIVED, THRESHOLD)
     assert "invalid:weight_unit_missing" in result.reasons
-    assert "missing:weight_kg" in result.reasons
+    assert "missing:weight" in result.reasons
 
 
 def test_lbs_weight_is_valid():
@@ -118,3 +118,25 @@ def test_low_confidence_not_reported_for_missing_field():
     output.confidence.origin = 0.0
     result = decide(output, RECEIVED, THRESHOLD)
     assert result.reasons == ["missing:origin"]
+
+
+class TestPickupDateRequiredOnlyForBookings:
+    def test_booking_without_pickup_date_needs_review(self):
+        result = decide(make_output(request_type="booking", pickup_date=None), RECEIVED, THRESHOLD)
+        assert result.decision == Decision.NEEDS_REVIEW
+        assert result.reasons == ["missing:pickup_date"]
+
+    def test_quote_without_pickup_date_is_accepted(self):
+        result = decide(make_output(request_type="quote", pickup_date=None), RECEIVED, THRESHOLD)
+        assert result.decision == Decision.ACCEPTED
+        assert result.reasons == []
+
+    def test_quote_with_pickup_date_still_validates_it(self):
+        result = decide(
+            make_output(request_type="quote", pickup_date=date(2026, 3, 1)), RECEIVED, THRESHOLD
+        )
+        assert result.reasons == ["invalid:pickup_date_before_received"]
+
+    def test_unknown_request_type_requires_pickup_date(self):
+        result = decide(make_output(request_type=None, pickup_date=None), RECEIVED, THRESHOLD)
+        assert result.reasons == ["missing:request_type", "missing:pickup_date"]
