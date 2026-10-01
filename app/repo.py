@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from app.db import to_utc_iso, transaction
-from app.schemas import EmailIn, ExtractionOutput
+from app.schemas import EmailIn, ExtractionOutput, FieldConfidence, ShipmentFields
 from app.validation import DecisionResult
 
 
@@ -202,3 +202,92 @@ def mark_failed(
 ) -> None:
     with transaction(conn):
         _finish(conn, email_id, attempt_no, now, status="failed", outcome="failed", error=error)
+
+
+# --- Review ----------------------------------------------------------------
+
+REVIEWABLE = ("needs_review", "failed")
+
+
+class ReviewConflict(Exception):
+    pass
+
+
+def list_review_queue(
+    conn: sqlite3.Connection, reason: str | None = None, limit: int = 100
+) -> list[sqlite3.Row]:
+    """Emails awaiting review, oldest first, with their latest extraction (if any).
+
+    `reason` filters on an exact reason code, e.g. "dangerous_goods" or "missing:weight".
+    """
+    return conn.execute(
+        """
+        SELECT e.id, e.sender, e.subject, e.received_at, e.status, e.last_error,
+               x.data_json, x.decision_reasons_json
+        FROM emails e
+        LEFT JOIN extractions x ON x.id = (
+            SELECT MAX(id) FROM extractions WHERE email_id = e.id
+        )
+        WHERE e.status IN ('needs_review', 'failed')
+          AND (:reason IS NULL OR EXISTS (
+                SELECT 1 FROM json_each(x.decision_reasons_json) WHERE value = :reason))
+        ORDER BY e.created_at, e.id
+        LIMIT :limit
+        """,
+        {"reason": reason, "limit": limit},
+    ).fetchall()
+
+
+def review(
+    conn: sqlite3.Connection,
+    email_id: int,
+    action: str,
+    reviewer: str,
+    corrected: ShipmentFields | None,
+    now: datetime,
+) -> None:
+    """Record a review next to the original extraction and mark the email accepted.
+
+    The original data_json is never modified; a correction goes in corrected_data_json.
+    A failed email has no extraction, so an empty one (all fields null, reason
+    extraction_failed) is created first, keeping the original/corrected pair shape.
+    Raises LookupError if the email doesn't exist, ReviewConflict if it isn't awaiting review.
+    """
+    now_iso = to_utc_iso(now)
+    with transaction(conn):
+        email = get_email(conn, email_id)
+        if email is None:
+            raise LookupError(email_id)
+        if email["status"] not in REVIEWABLE:
+            raise ReviewConflict(f"email {email_id} is {email['status']}, not awaiting review")
+
+        extraction = get_latest_extraction(conn, email_id)
+        if email["status"] == "failed":
+            if action == "approve":
+                raise ReviewConflict(
+                    f"email {email_id} failed extraction; nothing to approve, use 'correct'"
+                )
+            empty = ExtractionOutput(fields=ShipmentFields(), confidence=FieldConfidence())
+            conn.execute(
+                """
+                INSERT INTO extractions (email_id, data_json, field_confidence_json,
+                                         validation_errors_json, decision, decision_reasons_json,
+                                         model, prompt_version, created_at)
+                VALUES (?, ?, ?, '[]', 'needs_review', '["extraction_failed"]', 'none', 'none', ?)
+                """,
+                (email_id, empty.fields.model_dump_json(), empty.confidence.model_dump_json(), now_iso),
+            )
+            extraction = get_latest_extraction(conn, email_id)
+
+        conn.execute(
+            """
+            UPDATE extractions
+            SET review_action = ?, corrected_data_json = ?, reviewed_by = ?, reviewed_at = ?
+            WHERE id = ? AND review_action IS NULL
+            """,
+            (action, corrected.model_dump_json() if corrected else None, reviewer, now_iso,
+             extraction["id"]),
+        )
+        conn.execute(
+            "UPDATE emails SET status = 'accepted', updated_at = ? WHERE id = ?", (now_iso, email_id)
+        )

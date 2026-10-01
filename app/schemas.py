@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 LBS_TO_KG = 0.45359237
 
@@ -109,9 +109,29 @@ class ReviewAction(StrEnum):
 
 class ReviewIn(BaseModel):
     action: ReviewAction
-    reviewer: str
-    # Required when action == correct: the full corrected field set.
+    reviewer: str = Field(min_length=1)
+    # Required when action == correct: the full corrected field set (not a partial patch),
+    # so the stored correction is a complete label usable in the eval set.
     corrected: ShipmentFields | None = None
+
+    @model_validator(mode="after")
+    def _corrected_matches_action(self) -> "ReviewIn":
+        if self.action == ReviewAction.CORRECT and self.corrected is None:
+            raise ValueError("action 'correct' requires 'corrected'")
+        if self.action == ReviewAction.APPROVE and self.corrected is not None:
+            raise ValueError("action 'approve' must not include 'corrected'")
+        return self
+
+
+class ReviewItem(BaseModel):
+    id: int
+    sender: str
+    subject: str
+    received_at: datetime
+    status: EmailStatus  # needs_review or failed
+    reasons: list[str]
+    last_error: str | None
+    fields: ShipmentFields | None  # None for failed emails: nothing was extracted
 
 
 # --- API responses -------------------------------------------------------
